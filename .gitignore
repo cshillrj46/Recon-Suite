@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.Python
+venv/
+env/
+.venv/
+
+# Saídas geradas em runtime — não devem ir para o repositório
+output/*
+!output/.gitkeep
+results/*
+!results/.gitkeep
+
+# Variáveis de ambiente / chaves de API (NUNCA versionar)
+.env
+.env.local
+*.key
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
