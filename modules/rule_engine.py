@@ -15,6 +15,25 @@ Vantagens sobre IA: gratuito, instantâneo, determinístico e auditável.
 from modules.logger import log
 
 
+def _real_200(endpoint: dict) -> bool:
+    """
+    Verdadeiro apenas se o endpoint retornou 200 E esse 200 não foi
+    confirmado como página de bloqueio do WAF servida com status 200.
+
+    Usar `endpoint.get("status") == 200` diretamente em qualquer regra que
+    conclua "endpoint existe/está acessível" é uma fonte recorrente de falso
+    positivo: WAFs (Cloudflare, Akamai, Sucuri etc.) costumam devolver 200
+    com uma página de challenge/bloqueio em vez do 403/404 esperado. Toda
+    regra que decide severidade com base em "200 = exposto" deve passar
+    por aqui, e não comparar o status diretamente.
+    """
+    if not endpoint or endpoint.get("status") != 200:
+        return False
+    if endpoint.get("waf_softblock_confirmed") or endpoint.get("waf_softblock"):
+        return False
+    return True
+
+
 def _vul(id_, title, severity, owasp, certainty, tool, impact, remediation):
     return {
         "id": id_, "title": title, "severity": severity, "owasp": owasp,
@@ -234,7 +253,7 @@ def _generic_rules(results: dict, next_id) -> list:
         ))
 
     # ── Painéis administrativos genéricos expostos ────────────────────────────
-    admin_eps = [e for e in ep.get("endpoints", []) if e.get("status") == 200
+    admin_eps = [e for e in ep.get("endpoints", []) if _real_200(e)
                  and "administrativo genérico" in e.get("label","")]
     if admin_eps:
         paths = ", ".join(e["path"] for e in admin_eps[:5])
@@ -348,7 +367,7 @@ def _wordpress_rules(results: dict, next_id) -> list:
             "Remover /wp-login.php do robots.txt."
         ))
 
-    wpcron = next((e for e in ep.get("endpoints", []) if "wp-cron" in e.get("path","") and e.get("status") == 200), None)
+    wpcron = next((e for e in ep.get("endpoints", []) if "wp-cron" in e.get("path","") and _real_200(e)), None)
     if wpcron:
         vuls.append(_vul(
             next_id(), "/wp-cron.php acessível publicamente (200 OK)",
@@ -366,7 +385,7 @@ def _wordpress_rules(results: dict, next_id) -> list:
             "Configurar WP_DEBUG=false em produção."
         ))
 
-    wpcontent_dirs = [e for e in ep.get("endpoints", []) if e.get("path") in ("/wp-content/", "/wp-includes/") and e.get("status") == 200]
+    wpcontent_dirs = [e for e in ep.get("endpoints", []) if e.get("path") in ("/wp-content/", "/wp-includes/") and _real_200(e)]
     if wpcontent_dirs:
         vuls.append(_vul(
             next_id(), "Diretórios /wp-content e/ou /wp-includes acessíveis",
@@ -375,7 +394,7 @@ def _wordpress_rules(results: dict, next_id) -> list:
             "Adicionar index.php vazio em /wp-content/ e /wp-includes/."
         ))
 
-    contato_ep = next((e for e in ep.get("endpoints", []) if "contato" in e.get("path","").lower() and e.get("status") == 200), None)
+    contato_ep = next((e for e in ep.get("endpoints", []) if "contato" in e.get("path","").lower() and _real_200(e)), None)
     if contato_ep:
         vuls.append(_vul(
             next_id(), "Possível ausência de CAPTCHA no formulário de contato",
@@ -398,7 +417,7 @@ def _wordpress_rules(results: dict, next_id) -> list:
 def _laravel_rules(results: dict, next_id) -> list:
     ep = results.get("endpoints", {})
     vuls = []
-    env_exposed = next((e for e in ep.get("endpoints", []) if e.get("path") == "/.env" and e.get("status") == 200), None)
+    env_exposed = next((e for e in ep.get("endpoints", []) if e.get("path") == "/.env" and _real_200(e)), None)
     if env_exposed:
         vuls.append(_vul(
             next_id(), "Arquivo .env exposto publicamente (CRÍTICO)",
@@ -406,7 +425,7 @@ def _laravel_rules(results: dict, next_id) -> list:
             "O arquivo .env do Laravel tipicamente contém credenciais de banco de dados, chaves de API e APP_KEY. Sua exposição permite comprometimento total da aplicação.",
             "URGENTE: Bloquear acesso ao .env via configuração do servidor web. Rotacionar todas as credenciais expostas imediatamente."
         ))
-    telescope = next((e for e in ep.get("endpoints", []) if "telescope" in e.get("path","") and e.get("status") == 200), None)
+    telescope = next((e for e in ep.get("endpoints", []) if "telescope" in e.get("path","") and _real_200(e)), None)
     if telescope:
         vuls.append(_vul(
             next_id(), "Laravel Telescope acessível publicamente",
@@ -414,7 +433,7 @@ def _laravel_rules(results: dict, next_id) -> list:
             "O Telescope expõe requisições, queries SQL, jobs e exceptions da aplicação — informação extremamente sensível para um atacante.",
             "Restringir acesso ao Telescope apenas para ambiente local ou via autenticação/IP whitelist em produção."
         ))
-    ignition = next((e for e in ep.get("endpoints", []) if "_ignition" in e.get("path","") and e.get("status") == 200), None)
+    ignition = next((e for e in ep.get("endpoints", []) if "_ignition" in e.get("path","") and _real_200(e)), None)
     if ignition:
         vuls.append(_vul(
             next_id(), "Laravel Ignition (debug) acessível — possível RCE (CVE-2021-3129)",
@@ -428,7 +447,7 @@ def _laravel_rules(results: dict, next_id) -> list:
 def _django_rules(results: dict, next_id) -> list:
     ep = results.get("endpoints", {})
     vuls = []
-    debug_ep = next((e for e in ep.get("endpoints", []) if "__debug__" in e.get("path","") and e.get("status") == 200), None)
+    debug_ep = next((e for e in ep.get("endpoints", []) if "__debug__" in e.get("path","") and _real_200(e)), None)
     if debug_ep:
         vuls.append(_vul(
             next_id(), "Django Debug Toolbar acessível em produção",
@@ -436,7 +455,7 @@ def _django_rules(results: dict, next_id) -> list:
             "Expõe queries SQL, configurações e variáveis de ambiente internas da aplicação.",
             "Definir DEBUG=False em produção e remover django-debug-toolbar do middleware de produção."
         ))
-    admin_ep = next((e for e in ep.get("endpoints", []) if e.get("path") == "/admin/" and e.get("status") == 200), None)
+    admin_ep = next((e for e in ep.get("endpoints", []) if e.get("path") == "/admin/" and _real_200(e)), None)
     if admin_ep:
         vuls.append(_vul(
             next_id(), "Django Admin acessível na rota padrão /admin/",
@@ -452,7 +471,7 @@ def _generic_framework_env_rule(results: dict, next_id, tech_id: str) -> list:
     ep = results.get("endpoints", {})
     vuls = []
     for env_path in ("/.env", "/.env.local", "/.env.production"):
-        found = next((e for e in ep.get("endpoints", []) if e.get("path") == env_path and e.get("status") == 200), None)
+        found = next((e for e in ep.get("endpoints", []) if e.get("path") == env_path and _real_200(e)), None)
         if found:
             vuls.append(_vul(
                 next_id(), f"Arquivo {env_path} exposto publicamente (CRÍTICO)",

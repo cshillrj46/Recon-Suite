@@ -187,7 +187,16 @@ def run_tech_fingerprint(domain: str) -> dict:
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
         )
         result["robots_txt"] = robots_r.stdout[:2000]
-        result["wplogin_in_robots"] = "wp-login.php" in robots_r.stdout or "/admin" in robots_r.stdout
+        # Procura especificamente em diretivas Disallow:/Allow:, não em
+        # qualquer ocorrência da substring no arquivo (que poderia aparecer
+        # em comentários ou em outro contexto não relacionado a bloqueio).
+        directive_lines = [l for l in robots_r.stdout.splitlines()
+                            if re.match(r'^\s*(disallow|allow)\s*:', l, re.I)]
+        directives_text = "\n".join(directive_lines)
+        result["wplogin_in_robots"] = bool(
+            re.search(r'wp-login\.php', directives_text, re.I) or
+            re.search(r'/admin', directives_text, re.I)
+        )
     except Exception:
         result["robots_txt"] = ""
         result["wplogin_in_robots"] = False
@@ -198,7 +207,13 @@ def run_tech_fingerprint(domain: str) -> dict:
             ["curl", "-sI", "--max-time", "10", f"https://{domain}/sitemap.xml"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
         )
-        result["sitemap_accessible"] = "200" in sm_r.stdout or "301" in sm_r.stdout
+        # Extrai o código de status real do header HTTP/x.x NNN, em vez de
+        # buscar a substring "200" em qualquer lugar do texto (que poderia
+        # casar acidentalmente com um Content-Length: 12004 ou outro header
+        # numérico contendo "200").
+        codes = [int(m) for m in re.findall(r"HTTP/\S+\s+(\d+)", sm_r.stdout)]
+        final_code = codes[-1] if codes else 0
+        result["sitemap_accessible"] = final_code in (200, 301, 302)
     except Exception:
         result["sitemap_accessible"] = False
 

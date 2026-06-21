@@ -72,17 +72,45 @@ def _check_ssl(domain: str) -> dict:
 
 
 def _check_xmlrpc(domain: str) -> dict:
-    """ESPECÍFICO WordPress — mantido por compatibilidade, condicionado pelo chamador."""
+    """
+    ESPECÍFICO WordPress — mantido por compatibilidade, condicionado pelo chamador.
+
+    xmlrpc.php real, quando acessado via GET sem payload XML-RPC válido,
+    devolve uma mensagem de erro XML característica ("XML-RPC server
+    accepts POST requests only."). Confiar apenas no status 200 corre o
+    mesmo risco dos demais checks: um WAF servindo página de bloqueio com
+    200 seria contado como "xmlrpc acessível" incorretamente.
+    """
     try:
         r = subprocess.run(
-            ["curl", "-sI", "--max-time", "10", f"https://{domain}/xmlrpc.php"],
+            ["curl", "-s", "-D", "-", "--max-time", "10", f"https://{domain}/xmlrpc.php"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
         )
-        codes = [int(m) for m in re.findall(r"HTTP/\S+\s+(\d+)", r.stdout)]
+        raw = r.stdout
+        header_end = raw.find("\r\n\r\n")
+        if header_end == -1:
+            header_end = raw.find("\n\n")
+        headers_part = raw[:header_end] if header_end != -1 else raw
+        body_part    = raw[header_end:] if header_end != -1 else ""
+
+        codes = [int(m) for m in re.findall(r"HTTP/\S+\s+(\d+)", headers_part)]
         code = codes[-1] if codes else 0
-        return {"status_code": code, "exists": code != 404, "blocked": code == 403, "accessible": code == 200}
+
+        waf_block = _looks_like_waf_block_page(body_part)
+        looks_like_real_xmlrpc = "xml-rpc server accepts post" in body_part.lower() \
+            or "<methodresponse>" in body_part.lower()
+
+        accessible = (code == 200) and not waf_block
+
+        return {
+            "status_code": code, "exists": code != 404, "blocked": code == 403,
+            "accessible": accessible,
+            "waf_softblock": waf_block,
+            "confirmed_real_xmlrpc": looks_like_real_xmlrpc,
+        }
     except Exception:
-        return {"status_code": -1, "exists": False, "blocked": False, "accessible": False}
+        return {"status_code": -1, "exists": False, "blocked": False, "accessible": False,
+                "waf_softblock": False, "confirmed_real_xmlrpc": False}
 
 
 def _check_login_rate_limit(domain: str, login_path: str) -> dict:
@@ -181,21 +209,56 @@ def _check_login_rate_limit(domain: str, login_path: str) -> dict:
 
 
 def _check_csrf_in_form(domain: str, form_path: str) -> dict:
-    """GENÉRICO — verifica presença de qualquer token CSRF comum no HTML do formulário."""
+    """
+    GENÉRICO — verifica presença de qualquer token CSRF comum no HTML do formulário.
+
+    Cuidado: se a requisição for bloqueada por um WAF e a página de
+    bloqueio for devolvida no lugar do formulário real, o HTML recebido
+    nunca terá token CSRF — não porque o formulário não tenha proteção,
+    mas porque não vimos o formulário de fato. Reportar "missing_csrf=True"
+    nesse caso seria um falso positivo. Por isso verificamos primeiro se a
+    página recebida parece ser o formulário esperado (presença de campos
+    de login típicos) antes de concluir qualquer coisa sobre CSRF.
+    """
     try:
         r = subprocess.run(
             ["curl", "-sL", "--max-time", "10", f"https://{domain}{form_path}"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15
         )
         html = r.stdout
+
+        if _looks_like_waf_block_page(html):
+            return {"has_nonce": False, "missing_csrf": False, "inconclusive": True,
+                    "reason": "Página recebida parece ser bloqueio de WAF, não o formulário real"}
+
+        # Confirma que de fato chegamos a algo parecido com um formulário
+        # (tag <form> presente) antes de avaliar CSRF
+        if "<form" not in html.lower():
+            return {"has_nonce": False, "missing_csrf": False, "inconclusive": True,
+                    "reason": "Nenhuma tag <form> encontrada na página — não foi possível validar CSRF"}
+
         csrf_patterns = [
             r"_wpnonce", r"wp_nonce", r"csrf[_-]?token", r"csrfmiddlewaretoken",
             r"authenticity_token", r"__RequestVerificationToken", r"_token"
         ]
         has_token = any(re.search(p, html, re.I) for p in csrf_patterns)
-        return {"has_nonce": has_token, "missing_csrf": not has_token}
+        return {"has_nonce": has_token, "missing_csrf": not has_token, "inconclusive": False}
     except Exception:
-        return {"has_nonce": False, "missing_csrf": True}
+        return {"has_nonce": False, "missing_csrf": False, "inconclusive": True,
+                "reason": "Erro ao buscar a página"}
+
+
+def _looks_like_waf_block_page(html: str) -> bool:
+    if not html:
+        return False
+    low = html.lower()
+    signatures = [
+        "just a moment", "checking your browser", "attention required! | cloudflare",
+        "cf-error-details", "you have been blocked", "request blocked",
+        "incapsula incident id", "the requested url was rejected", "akamaighost",
+        "sucuri website firewall", "ddos protection by",
+    ]
+    return any(sig in low for sig in signatures)
 
 
 def _scan_uploads_for_sensitive(domain: str, upload_paths: list) -> list:

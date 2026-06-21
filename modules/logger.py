@@ -12,8 +12,8 @@ RESET  = "\033[0m"
 def banner():
     print(f"""
 {BOLD}{BLUE}╔══════════════════════════════════════════════════════════╗
-║     RECON SUITE — Automação de Pentest Multi-Tecnologia  ║
-║     Reconhecimento, Varredura e Classificação de VULs    ║
+║     RECON SUITE — Automação de Pentest Multi-Tecnologia   ║
+║     Reconhecimento, Varredura e Classificação de VULs      ║
 ╚══════════════════════════════════════════════════════════╝{RESET}
 """)
 
