@@ -162,14 +162,37 @@ def _generic_rules(results: dict, next_id) -> list:
             "Implementar token CSRF (nonce, synchronizer token ou similar) em todos os formulários sensíveis."
         ))
 
-    # ── Rate limiting ausente no login ────────────────────────────────────────
+    # ── Rate limiting no login — distingue WAF vs proteção nativa ────────────
     wplogin_rate = vs.get("wplogin_rate", {})
-    if wplogin_rate.get("accessible_200"):
+    scenario = wplogin_rate.get("scenario", "")
+
+    if scenario == "no_protection_detected":
         vuls.append(_vul(
-            next_id(), "Página de login sem rate limiting aparente",
-            "Alto", "A07 – Identification and Authentication Failures", "Média", "Verificação manual",
-            "A ausência de rate limiting permite tentativas ilimitadas de login, facilitando ataques de força bruta e credential stuffing.",
-            "Implementar rate limiting (ex: fail2ban, middleware de throttling) e considerar autenticação multifator (2FA/MFA)."
+            next_id(), "Página de login sem rate limiting — POSTs de login aceitos sem bloqueio",
+            "Alto", "A07 – Identification and Authentication Failures", "Alta", "Verificação manual (POST real)",
+            "Tentativas de login via POST com credenciais inválidas foram aceitas repetidamente sem qualquer bloqueio, atraso progressivo ou CAPTCHA. Isso permite ataques de força bruta e credential stuffing sem restrição.",
+            "Implementar rate limiting na aplicação (ex: fail2ban, middleware de throttling, plugin de segurança) e considerar autenticação multifator (2FA/MFA)."
+        ))
+    elif scenario in ("waf_blocks_all_post", "waf_blocks_login_specifically"):
+        is_generic_block = scenario == "waf_blocks_all_post"
+        block_desc = (
+            "bloqueio genérico de qualquer requisição POST para o endpoint (confirmado por requisição de controle com payload não relacionado a login, também bloqueada)"
+            if is_generic_block else
+            "bloqueio específico de payloads de autenticação (a requisição de controle com payload genérico não foi bloqueada)"
+        )
+        vuls.append(_vul(
+            next_id(),
+            "Rate limiting de login ausente nativamente — mitigado externamente por WAF",
+            "Médio", "A07 – Identification and Authentication Failures", "Alta", "Verificação manual (POST real + controle)",
+            f"Tentativas de login via POST foram bloqueadas com HTTP 403 em 100% dos casos, caracterizando {block_desc}. Isso indica proteção ativa de WAF/CDN, e não rate limiting nativo da aplicação. O risco prático imediato é baixo, mas existe risco residual de dependência de terceiro: caso o WAF seja desabilitado, mal configurado, ou contornado (ex: requisição direta ao IP de origem, se exposto, ou via rota alternativa de autenticação), a ausência de proteção nativa voltaria a expor o endpoint a ataques de força bruta.",
+            "Implementar rate limiting e MFA diretamente na aplicação como defesa em profundidade, independente da proteção perimetral (WAF/CDN). Não depender exclusivamente do WAF como única camada de proteção contra brute-force."
+        ))
+    elif scenario == "inconclusive":
+        vuls.append(_vul(
+            next_id(), "Rate limiting de login — resultado inconclusivo",
+            "Informativo", "A07 – Identification and Authentication Failures", "Baixa", "Verificação manual (POST real)",
+            "O teste de rate limiting retornou respostas inconsistentes entre as tentativas, não permitindo classificação definitiva do comportamento de proteção.",
+            "Repetir o teste manualmente com ferramenta dedicada (ex: Burp Suite Intruder) para confirmar o comportamento real do endpoint."
         ))
 
     # ── E-mails expostos no HTML ──────────────────────────────────────────────

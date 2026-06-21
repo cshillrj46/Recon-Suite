@@ -86,20 +86,98 @@ def _check_xmlrpc(domain: str) -> dict:
 
 
 def _check_login_rate_limit(domain: str, login_path: str) -> dict:
-    """GENÉRICO — adapta o path de login conforme a tecnologia (parametrizado)."""
+    """
+    GENÉRICO — testa rate limiting de forma realista.
+
+    Importante: testar apenas GET/HEAD (curl -sI) é insuficiente e pode gerar
+    falso positivo de "sem rate limiting" quando, na realidade, um WAF está
+    bloqueando POSTs de login mas permitindo GETs normalmente (cenário comum
+    em ambientes protegidos por Cloudflare/WAF). Este check faz POSTs reais
+    simulando tentativas de login, e também envia um POST de controle com
+    payload genérico (sem campos de login) para distinguir:
+      - Bloqueio específico de login (WAF reconhece o payload de auth)
+      - Bloqueio genérico de método POST (WAF bloqueia qualquer POST)
+      - Ausência total de proteção (rate limiting realmente ausente)
+
+    NUNCA envia uma senha que poderia ser válida — usa apenas valores
+    claramente inválidos (timestamp + sufixo), preservando o caráter de
+    teste de segurança e não de tentativa real de acesso não autorizado.
+    """
+    import time
+
+    def _post(data: dict, path: str) -> dict:
+        try:
+            body = "&".join(f"{k}={v}" for k, v in data.items())
+            r = subprocess.run([
+                "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}|%{time_total}",
+                "--max-time", "10", "-d", body, f"https://{domain}{path}"
+            ], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=12)
+            parts = r.stdout.strip().split("|")
+            code = int(parts[0]) if parts[0].isdigit() else 0
+            elapsed = float(parts[1]) if len(parts) > 1 else 0.0
+            return {"status": code, "elapsed": elapsed}
+        except Exception:
+            return {"status": 0, "elapsed": 0.0}
+
     try:
-        statuses = []
-        for _ in range(3):
-            r = subprocess.run(
-                ["curl", "-sI", "--max-time", "8", f"https://{domain}{login_path}"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
-            )
-            codes = [int(m) for m in re.findall(r"HTTP/\S+\s+(\d+)", r.stdout)]
-            statuses.append(codes[-1] if codes else 0)
-        all_200 = all(s == 200 for s in statuses)
-        return {"statuses": statuses, "rate_limit_found": not all_200, "accessible_200": all_200}
+        # 1) POSTs simulando tentativas de login (credenciais claramente inválidas)
+        login_attempts = []
+        for i in range(5):
+            ts = int(time.time())
+            res = _post({
+                "log": "wpscan-rate-test",
+                "pwd": f"invalid-test-{ts}-{i}",
+                "wp-submit": "Log+In",
+            }, login_path)
+            login_attempts.append(res)
+            time.sleep(0.5)
+
+        login_statuses  = [a["status"]  for a in login_attempts]
+        login_times     = [a["elapsed"] for a in login_attempts]
+
+        # 2) POST de controle — payload genérico, sem campos de login,
+        #    para verificar se o bloqueio é específico de auth ou geral
+        control = _post({"teste": "valor_generico_controle"}, login_path)
+
+        login_blocked_403   = all(s == 403 for s in login_statuses)
+        control_blocked_403 = control["status"] == 403
+        all_200             = all(s == 200 for s in login_statuses)
+
+        # Classificação do cenário real
+        if login_blocked_403 and control_blocked_403:
+            scenario = "waf_blocks_all_post"
+            rate_limit_found = True       # mitigado, mas não nativamente
+            native_rate_limit = False     # WordPress em si não tem proteção própria
+        elif login_blocked_403 and not control_blocked_403:
+            scenario = "waf_blocks_login_specifically"
+            rate_limit_found = True
+            native_rate_limit = False
+        elif all_200:
+            scenario = "no_protection_detected"
+            rate_limit_found = False
+            native_rate_limit = False
+        else:
+            scenario = "inconclusive"
+            rate_limit_found = not all_200
+            native_rate_limit = False
+
+        return {
+            "login_statuses":     login_statuses,
+            "login_times":        login_times,
+            "control_status":     control["status"],
+            "scenario":           scenario,
+            "rate_limit_found":   rate_limit_found,
+            "native_rate_limit":  native_rate_limit,
+            "accessible_200":     all_200,
+            # Compatibilidade com versões anteriores do código:
+            "statuses":           login_statuses,
+        }
     except Exception:
-        return {"statuses": [], "rate_limit_found": False, "accessible_200": False}
+        return {
+            "login_statuses": [], "login_times": [], "control_status": 0,
+            "scenario": "error", "rate_limit_found": False,
+            "native_rate_limit": False, "accessible_200": False, "statuses": [],
+        }
 
 
 def _check_csrf_in_form(domain: str, form_path: str) -> dict:
@@ -193,11 +271,19 @@ def run_vuln_scan(domain: str, tech_data: dict = None, skip_nikto: bool = False)
     else:
         result["xmlrpc"] = {"status_code": 404, "exists": False, "blocked": False, "accessible": False}
 
-    # ── Rate limiting no login (GENÉRICO, path adaptado) ──────────────────────
-    log(f"Verificando rate limiting em {login_path}...")
+    # ── Rate limiting no login (GENÉRICO, path adaptado, POST real) ──────────
+    log(f"Verificando rate limiting em {login_path} (POST real com 5 tentativas + controle)...")
     result["wplogin_rate"] = _check_login_rate_limit(domain, login_path)
-    if result["wplogin_rate"]["accessible_200"]:
-        warn(f"{login_path} sem rate limiting detectado")
+    rl = result["wplogin_rate"]
+    scenario = rl.get("scenario", "")
+    if scenario == "no_protection_detected":
+        warn(f"{login_path} sem rate limiting detectado — POSTs de login aceitos sem bloqueio")
+    elif scenario == "waf_blocks_all_post":
+        warn(f"{login_path}: POST bloqueado por WAF (403) de forma genérica — sem rate limiting nativo do WordPress, risco residual se o WAF for removido/contornado")
+    elif scenario == "waf_blocks_login_specifically":
+        log(f"{login_path}: WAF bloqueia especificamente tentativas de login (403) — sem rate limiting nativo do WordPress")
+    elif scenario == "inconclusive":
+        warn(f"{login_path}: resultado inconclusivo, verificar manualmente")
 
     # ── CSRF no formulário de login (GENÉRICO, path adaptado) ─────────────────
     log(f"Verificando token CSRF em {login_path}...")
