@@ -1,0 +1,17 @@
+- Nikto v2.6.0/
++ Target Host: ceappedreira.org.br
++ Target Port: 443
++ GET /: Link header(s) found with value(s): <https://ceappedreira.org.br/wp-json/>; rel="https://api.w.org/", <https://ceappedreira.org.br/wp-json/wp/v2/pages/6>; rel="alternate"; title="JSON"; type="application/json", <https://ceappedreira.org.br/>; rel=shortlink. See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Link: 
++ GET /: An alt-svc header was found which is advertising HTTP/3. The endpoint is: ':443'. Nikto cannot test HTTP/3 over QUIC. See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/alt-svc: 
++ GET /: Cloudflare detected via cf-ray header. Recommend proxying via Burp or mitmproxy to avoid TLS fingerprint blocks. See: https://github.com/sullo/nikto/wiki/Using-a-Proxy: 
++ SSL Info:           Subject:  /CN=ceappedreira.org.br
+                      CN:       ceappedreira.org.br
+                      SAN:      ceappedreira.org.br, *.ceappedreira.org.br
+                      Ciphers:  TLS_AES_256_GCM_SHA384
+                      Issuer:   /C=US/O=Google Trust Services/CN=WE1
++ GET /cgi-914/: Uncommon header(s) 'reporting-endpoints' found, with contents: cf-csp-endpoint="https://csp-reporting.cloudflare.com/cdn-cgi/script_monitor/report?m=f0Hlpv3nUVXSDfw1uTCmcy1.xVsl2YNqk8d1TNShK.U-1787843468.028113-1.0.1.1-qUdyoRw_OZJdkrAhUwkjUPvhygzfsxwF.qlrr3U9NonTLRAcYOH3jjR4d9CmQwC2r_RDGzIZGq5.Z9YpepkItYlFVKth9ntaA7RJKppErcsMCFO1DWKcDmOnyLzQbxF3P9ZZ4kCFoE.ENG19s.qkRBZQMtHqu2xDqILTWYQ_6rjeknyDnJZTGIKawcTTYa27".
++ GET /robots.txt: Server may leak inodes via ETags, header found with file /robots.txt, inode: W/62, size: 621f30fcb1180, mtime: gzip. See: CVE-2003-1418: 
++ GET /wp-admin/: Uncommon header(s) 'x-redirect-by' found, with contents: WordPress.
++ GET /wp-login.php: Uncommon header(s) 'origin-agent-cluster' found, with contents: ?1.
++ GET /wp-login.php: Uncommon header(s) 'cf-mitigated' found, with contents: challenge.
++ GET /robots.txt: contains 4 entries which should be manually viewed. See: https://developer.mozilla.org/en-US/docs/Glossary/Robots.txt: 
